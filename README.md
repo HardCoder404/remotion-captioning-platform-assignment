@@ -2,9 +2,8 @@
 
 A full-stack web application that allows users to upload MP4 videos, automatically generate captions using OpenAI Whisper API, and render those captions onto videos using Remotion with support for Hinglish (Hindi + English).
 
-## 🚀 Live Demo
-
-[Deployed URL Here]
+## 🚀 Live Demo [ Loom Video ]
+https://www.loom.com/share/56ce133fba99441cb0a8daa523a31b05
 
 ## ✨ Features
 
