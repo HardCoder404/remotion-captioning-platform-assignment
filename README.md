@@ -105,7 +105,15 @@ remotion-captioning-platform/
 │   │   ├── Root.tsx              # Remotion root call
 │   │   └── styles/               # Caption style components
 │   ├── lib/
-│   │   ├── whisper.ts            # Whisper API integration
+│   │   ├── whisper.ts            # Whisper API 
+layouts
+│   ├── CaptionGenerator.tsx
+│   ├── CaptionStyleSelector.tsx
+│   ├── ExportVideo.tsx
+│   ├── MainLayout.tsx
+│   ├── VideoPreviewSection.tsx
+│   ├── VideoUpload.tsx
+integration
 │   │   └── types.ts              # TypeScript types
 │   └── utils/
 │       └── helpers.ts            # Helper functions
