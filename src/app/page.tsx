@@ -37,6 +37,8 @@ export default function Home() {
       const data = await response.json();
 
       if (data.success) {
+        console.log("Upload response:", data); // ADD THIS
+        console.log("Video URL:", data.url); // ADD THIS
         setVideoUrl(data.url);
       } else {
         alert("Failed to upload video");
@@ -107,11 +109,18 @@ export default function Home() {
 
       if (data.success) {
         setRenderedVideoUrl(data.url);
-        // Download the video
+        // Download the video by fetching and creating blob URL
+        const response = await fetch(data.url);
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+
         const link = document.createElement("a");
-        link.href = data.url;
+        link.href = blobUrl;
         link.download = "captioned-video.mp4";
         link.click();
+
+        // Clean up blob URL
+        URL.revokeObjectURL(blobUrl);
       } else {
         alert("Failed to render video");
       }

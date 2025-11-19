@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, mkdir } from "fs/promises";
-import { join } from "path";
-import { v4 as uuidv4 } from "uuid";
+import { getGridFSBucket } from "@/lib/mongodb";
+import { Readable } from "stream";
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,29 +19,52 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Create uploads directory if it doesn't exist
-    const uploadsDir = join(process.cwd(), "public", "uploads");
-    try {
-      await mkdir(uploadsDir, { recursive: true });
-    } catch (error) {
-      console.log("ERROR: ", error);
+    // Validate file size (100MB max)
+    const maxSize = 100 * 1024 * 1024; // 100MB in bytes
+    if (file.size > maxSize) {
+      return NextResponse.json(
+        { error: "File size exceeds 100MB limit" },
+        { status: 400 }
+      );
     }
 
-    // Generate unique filename
-    const filename = `${uuidv4()}.mp4`;
-    const filepath = join(uploadsDir, filename);
+    // Get GridFS bucket
+    const bucket = await getGridFSBucket();
 
-    // Convert file to buffer and save
+    // Convert file to buffer
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
-    await writeFile(filepath, buffer);
 
-    // Return public URL
-    const publicUrl = `/uploads/${filename}`;
+    // Create a readable stream from buffer
+    const readableStream = new Readable();
+    readableStream.push(buffer);
+    readableStream.push(null);
 
+    // Upload to GridFS with metadata (contentType goes in metadata)
+    const uploadStream = bucket.openUploadStream(file.name, {
+      metadata: {
+        contentType: file.type,
+        originalName: file.name,
+        uploadedAt: new Date(),
+        size: buffer.length,
+      },
+    });
+
+    // Pipe the file to GridFS
+    await new Promise((resolve, reject) => {
+      readableStream
+        .pipe(uploadStream)
+        .on("finish", resolve)
+        .on("error", reject);
+    });
+
+    const fileId = uploadStream.id.toString();
+
+    // Return MongoDB file ID
     return NextResponse.json({
       success: true,
-      url: publicUrl,
+      url: `/api/video/${fileId}`,
+      fileId,
       filename: file.name,
     });
   } catch (error) {

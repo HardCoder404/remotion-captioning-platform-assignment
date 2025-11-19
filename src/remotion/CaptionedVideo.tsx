@@ -1,4 +1,4 @@
-import { AbsoluteFill, Html5Video, staticFile } from "remotion";
+import { AbsoluteFill, OffthreadVideo } from "remotion";
 import { Caption } from "./Caption";
 import { Caption as CaptionType, CaptionStyle } from "@/lib/types";
 
@@ -13,18 +13,16 @@ export const CaptionedVideo: React.FC<CaptionedVideoProps> = ({
   captions,
   style,
 }) => {
-
-  const filename = videoUrl.split(/[\\/]/).pop() || "";
-  const videoSrc = staticFile(`uploads/${filename}`);
-
+  
   return (
     <AbsoluteFill>
       <AbsoluteFill>
-        <Html5Video
-          src={videoSrc}
+        <OffthreadVideo
+          src={videoUrl}
           style={{ width: "100%", height: "100%", objectFit: "contain" }}
         />
       </AbsoluteFill>
+
       <AbsoluteFill>
         {captions.map((caption) => (
           <Caption key={caption.id} caption={caption} style={style} />

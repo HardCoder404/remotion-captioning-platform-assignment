@@ -13,6 +13,12 @@
 # testing
 /coverage
 
+
+public / temp;
+public / uploads;
+public / outputs;
+
+
 # next.js
 /.next/
 /out/

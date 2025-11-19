@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import Groq from "groq-sdk";
-import path from "path";
-import fs from "fs/promises";
+import { getGridFSBucket } from "@/lib/mongodb";
+import { ObjectId } from "mongodb";
 
 const client = new Groq({
   apiKey: process.env.GROQ_API_KEY!,
@@ -44,16 +44,34 @@ export async function POST(req: Request) {
 
     let videoFile: File;
 
-    if (videoUrl.startsWith("/uploads/")) {
-      // Read from local filesystem
-      const filePath = path.join(process.cwd(), "public", videoUrl);
-      const fileBuffer = await fs.readFile(filePath);
-      const videoBlob = new Blob([fileBuffer], { type: "video/mp4" });
-      videoFile = new File([videoBlob], path.basename(videoUrl), {
+    // Extract fileId from URL (format: /api/video/[fileId])
+    const fileIdMatch = videoUrl.match(/\/api\/video\/([a-f0-9]+)/);
+
+    if (fileIdMatch) {
+      const fileId = fileIdMatch[1];
+
+      if (!ObjectId.isValid(fileId)) {
+        return NextResponse.json({ error: "Invalid file ID" }, { status: 400 });
+      }
+
+      const bucket = await getGridFSBucket();
+      const objectId = new ObjectId(fileId);
+
+      // Download from GridFS
+      const downloadStream = bucket.openDownloadStream(objectId);
+
+      const chunks: Buffer[] = [];
+      for await (const chunk of downloadStream) {
+        chunks.push(chunk);
+      }
+      const buffer = Buffer.concat(chunks);
+
+      const videoBlob = new Blob([buffer], { type: "video/mp4" });
+      videoFile = new File([videoBlob], "video.mp4", {
         type: "video/mp4",
       });
     } else {
-      // Fetch from external URL
+      // Fallback: Fetch from external URL
       const videoResponse = await fetch(videoUrl);
       if (!videoResponse.ok) {
         return NextResponse.json(
