@@ -15,7 +15,6 @@ export async function POST(request: NextRequest) {
   let propsPath: string | null = null;
   let tempVideoPath: string | null = null;
   let outputPath: string | null = null;
-  let tempVideoFilename: string | null = null;
 
   try {
     const { videoUrl, captions, style } = await request.json();
@@ -31,13 +30,16 @@ export async function POST(request: NextRequest) {
       videoUrl,
       captionsCount: captions.length,
       style,
+      platform: process.env.VERCEL ? "Vercel" : "Local",
     });
 
-    // Create temp directory in public folder (accessible via HTTP)
-    const tempDir = join(process.cwd(), "public", "temp");
+    // IMPORTANT: Use /tmp on Vercel (only writable directory)
+    const tempDir = join("/tmp", "remotion-temp", uuidv4());
     await mkdir(tempDir, { recursive: true });
 
-    // Download video from MongoDB to temp file in public folder
+    console.log("Created temp directory:", tempDir);
+
+    // Download video from MongoDB
     const fileIdMatch = videoUrl.match(/\/api\/video\/([a-f0-9]+)/);
 
     if (!fileIdMatch) {
@@ -53,13 +55,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid file ID" }, { status: 400 });
     }
 
+    console.log("Fetching video from MongoDB...");
+
     const bucket = await getGridFSBucket();
     const objectId = new ObjectId(fileId);
 
-    // Download video to public/temp folder
-    tempVideoFilename = `input-${uuidv4()}.mp4`;
-    tempVideoPath = join(tempDir, tempVideoFilename);
-
+    // Download video to temp
+    tempVideoPath = join(tempDir, "input.mp4");
     const downloadStream = bucket.openDownloadStream(objectId);
     const chunks: Buffer[] = [];
 
@@ -70,51 +72,71 @@ export async function POST(request: NextRequest) {
     const videoBuffer = Buffer.concat(chunks);
     await writeFile(tempVideoPath, videoBuffer);
 
-    console.log("Video downloaded to temp:", tempVideoPath);
+    console.log("Video saved to temp:", {
+      path: tempVideoPath,
+      sizeKB: Math.round(videoBuffer.length / 1024),
+    });
 
-    // Create output path in temp
-    const outputFilename = `output-${uuidv4()}.mp4`;
-    outputPath = join(tempDir, outputFilename);
+    // Create output path
+    outputPath = join(tempDir, "output.mp4");
 
-    // Create props file with HTTP URL instead of file path
-    propsPath = join(tempDir, `props-${uuidv4()}.json`);
+    // Create props file - use the API URL directly (not file path)
+    propsPath = join(tempDir, "props.json");
 
     const renderProps = {
-      videoUrl: `${
-        process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
-      }/temp/${tempVideoFilename}`,
+      videoUrl: videoUrl, // Keep using API endpoint
       captions,
       style: style || "bottom-centered",
     };
 
     await writeFile(propsPath, JSON.stringify(renderProps, null, 2));
 
-    console.log("Props file created:", propsPath);
-    console.log("Video URL for Remotion:", renderProps.videoUrl);
+    console.log("Props created, starting Remotion render...");
 
-    const command = `npx remotion render src/remotion/Root.tsx CaptionedVideo "${outputPath}" --props="${propsPath}"`;
+    // Check for FFmpeg (will help debug Vercel issues)
+    try {
+      const { stdout: ffmpegVersion } = await execAsync("ffmpeg -version");
+      console.log("FFmpeg available:", ffmpegVersion.split("\n")[0]);
+    } catch (e) {
+      console.warn("FFmpeg check failed:", e);
+    }
 
-    console.log("Executing command:", command);
+    // Remotion render command
+    const command = `npx remotion render src/remotion/Root.tsx CaptionedVideo "${outputPath}" --props="${propsPath}" --log=verbose`;
+
+    console.log("Executing:", command);
+
+    const startTime = Date.now();
+    const timeoutMs = process.env.VERCEL ? 9000 : 300000; // 9s on Vercel (leave 1s buffer), 5min local
 
     const { stdout, stderr } = await execAsync(command, {
       cwd: process.cwd(),
-      maxBuffer: 1024 * 1024 * 50,
-      timeout: 300000,
+      maxBuffer: 1024 * 1024 * 50, // 50MB
+      timeout: timeoutMs,
     });
 
-    console.log("Remotion stdout:", stdout);
+    const renderDuration = Date.now() - startTime;
+    console.log(`Render completed in ${renderDuration}ms`);
+    console.log("Remotion output:", stdout);
+
     if (stderr) {
       console.log("Remotion stderr:", stderr);
     }
 
-    // Verify output file was created
+    // Verify output
     if (!existsSync(outputPath)) {
-      throw new Error("Output video file was not created");
+      throw new Error("Output video was not created by Remotion");
     }
 
-    console.log("Render complete! Output:", outputPath);
+    const outputStats = await readFile(outputPath);
+    console.log("Output video created:", {
+      path: outputPath,
+      sizeKB: Math.round(outputStats.length / 1024),
+    });
 
-    // Upload rendered video back to MongoDB
+    // Upload rendered video to MongoDB
+    console.log("Uploading rendered video to MongoDB...");
+
     const outputBuffer = await readFile(outputPath);
 
     const readableStream = new Readable();
@@ -140,15 +162,17 @@ export async function POST(request: NextRequest) {
 
     const renderedFileId = uploadStream.id.toString();
 
-    // Clean up temp files
-    if (propsPath && existsSync(propsPath)) {
-      await unlink(propsPath);
-    }
-    if (tempVideoPath && existsSync(tempVideoPath)) {
-      await unlink(tempVideoPath);
-    }
-    if (outputPath && existsSync(outputPath)) {
-      await unlink(outputPath);
+    console.log("Upload complete, cleaning up...");
+
+    // Cleanup temp directory
+    try {
+      if (propsPath && existsSync(propsPath)) await unlink(propsPath);
+      if (tempVideoPath && existsSync(tempVideoPath)) await unlink(tempVideoPath);
+      if (outputPath && existsSync(outputPath)) await unlink(outputPath);
+      // Remove the temp directory itself
+      await execAsync(`rm -rf "${tempDir}"`);
+    } catch (cleanupError) {
+      console.error("Cleanup error:", cleanupError);
     }
 
     return NextResponse.json({
@@ -156,44 +180,66 @@ export async function POST(request: NextRequest) {
       url: `/api/video/${renderedFileId}`,
       fileId: renderedFileId,
       message: "Video rendered successfully",
+      renderTime: `${renderDuration}ms`,
     });
   } catch (e) {
-    const error = e as Error & { stdout?: string; stderr?: string };
-    console.error("Render error:", error);
+    const error = e as Error & {
+      stdout?: string;
+      stderr?: string;
+      code?: string;
+      killed?: boolean;
+    };
+
+    console.error("Render error:", {
+      message: error.message,
+      code: error.code,
+      killed: error.killed,
+    });
 
     // Cleanup on error
-    if (propsPath && existsSync(propsPath)) {
-      try {
-        await unlink(propsPath);
-      } catch (cleanupError) {
-        console.error("Failed to cleanup props file:", cleanupError);
-      }
-    }
-    if (tempVideoPath && existsSync(tempVideoPath)) {
-      try {
+    try {
+      if (propsPath && existsSync(propsPath)) await unlink(propsPath);
+      if (tempVideoPath && existsSync(tempVideoPath))
         await unlink(tempVideoPath);
-      } catch (cleanupError) {
-        console.error("Failed to cleanup temp video:", cleanupError);
-      }
+      if (outputPath && existsSync(outputPath)) await unlink(outputPath);
+    } catch (cleanupError) {
+      console.error("Cleanup error:", cleanupError);
     }
-    if (outputPath && existsSync(outputPath)) {
-      try {
-        await unlink(outputPath);
-      } catch (cleanupError) {
-        console.error("Failed to cleanup output video:", cleanupError);
-      }
+
+    // Better error messages
+    if (error.killed || error.code === "ETIMEDOUT") {
+      return NextResponse.json(
+        {
+          error: "Render timeout",
+          details:
+            "Video rendering exceeded Vercel's 10-second free tier limit. Please upgrade to Vercel Pro (300s limit) or use Railway.app for free unlimited rendering time.",
+        },
+        { status: 408 }
+      );
+    }
+
+    if (error.message.includes("ENOENT") && error.message.includes("ffmpeg")) {
+      return NextResponse.json(
+        {
+          error: "FFmpeg not found",
+          details:
+            "FFmpeg is required for video rendering but is not available on Vercel free tier. Please deploy to Railway.app or upgrade to Vercel Pro with custom configuration.",
+        },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json(
       {
         error: "Failed to render video",
         details: error.message,
-        stdout: error.stdout,
-        stderr: error.stderr,
+        code: error.code,
+        stdout: error.stdout?.substring(0, 1000), // Limit log size
+        stderr: error.stderr?.substring(0, 1000),
       },
       { status: 500 }
     );
   }
 }
 
-export const maxDuration = 300;
+export const maxDuration = 300; // Requires Vercel Pro
